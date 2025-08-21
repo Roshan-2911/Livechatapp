@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Realtime Chat with Audio Calling</title>
+  <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-100 flex flex-col h-screen">
+
+  <!-- Header -->
+  <header class="bg-blue-600 text-white py-4 shadow-md">
+    <div class="max-w-6xl mx-auto px-4 flex justify-between items-center">
+      <h1 class="text-2xl font-bold">Realtime Chat</h1>
+      <span id="meTag" class="text-sm opacity-80"></span>
+    </div>
+  </header>
+
+  <!-- Chat Layout -->
+  <main class="flex flex-1 max-w-6xl mx-auto w-full overflow-hidden">
+    <!-- Sidebar -->
+    <aside class="w-60 bg-white border-r border-slate-200 p-4 overflow-y-auto">
+      <h2 class="text-lg font-semibold mb-3">Online Users</h2>
+      <div id="onlineUsers" class="space-y-2"></div>
+    </aside>
+
+    <!-- Chat Section -->
+    <section class="flex-1 flex flex-col px-4 py-6">
+      <div id="chatWith" class="text-lg font-semibold text-slate-700 mb-3">Select a user to chat</div>
+      <div id="messages" class="flex-1 overflow-y-auto space-y-4 mb-4 p-3 bg-white rounded-2xl shadow-sm"></div>
+
+      <div class="flex space-x-2">
+        <input id="message" type="text"
+          class="flex-1 rounded-xl border border-slate-200 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="Type a message..." />
+        <button onclick="sendMessage()"
+          class="rounded-xl bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 shadow">
+          Send
+        </button>
+      </div>
+      
+      <!-- Hang Up button (shown only during call) -->
+<button id="hangupBtn"
+  class="hidden mt-3 self-start px-4 py-2 rounded-xl bg-red-600 text-white shadow hover:bg-red-700">
+  🔴 Hang Up
+</button>
+      
+      
+    </section>
+  </main>
+
+  <!-- Login Modal -->
+  <div id="loginModal" class="fixed inset-0 bg-black/40 flex items-center justify-center">
+    <div class="bg-white w-[92%] max-w-md rounded-2xl p-6 shadow-xl">
+      <h2 class="text-xl font-semibold text-slate-800 mb-2">Welcome 👋</h2>
+      <p class="text-slate-500 mb-5">Enter your username and password to start chatting.</p>
+      <div class="space-y-3">
+        <input id="username" type="text"
+          class="w-full rounded-xl border border-slate-200 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="Username" />
+        <input id="password" type="password"
+          class="w-full rounded-xl border border-slate-200 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="Password" />
+        <button
+          class="w-full rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium px-5 py-3"
+          onclick="start()">Start</button>
+      </div>
+    </div>
+  </div>
+  
+  
+  
+<!-- Incoming Call Full-Screen Modal -->
+<div id="incomingCallModal" class="fixed inset-0 bg-black flex flex-col items-center justify-center text-white z-50 hidden">
+  <div class="text-center">
+    <div class="text-2xl font-semibold mb-1" id="callerName">John Doe</div>
+    <div class="text-sm opacity-70 mb-10">Audio Call</div>
+    
+    <div class="flex justify-center gap-14">
+      <div class="flex flex-col items-center">
+        <button id="rejectCallBtn" class="w-16 h-16 bg-red-600 rounded-full text-white text-2xl shadow-lg hover:bg-red-700">
+          &#x2715;
+        </button>
+        <span class="text-sm mt-2 opacity-80">Decline</span>
+      </div>
+
+      <div class="flex flex-col items-center">
+        <button id="acceptCallBtn" class="w-16 h-16 bg-green-600 rounded-full text-white text-2xl shadow-lg hover:bg-green-700">
+          &#x2713;
+        </button>
+        <span class="text-sm mt-2 opacity-80">Accept</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+  
+<!-- Active Call UI Overlay -->
+<div id="callOverlay" class="fixed inset-0 bg-gray-900 text-white flex flex-col items-center justify-center z-40 hidden">
+  <div class="text-center">
+    <img src="https://cdn-icons-png.flaticon.com/512/149/149071.png" alt="Avatar" class="w-24 h-24 rounded-full mx-auto mb-4 opacity-70">
+    <div id="callUserName" class="text-xl font-semibold mb-1">User Name</div>
+    <div id="callTimer" class="text-sm text-gray-300 mb-10">00:00</div>
+
+    <div class="flex justify-center gap-10">
+      <button id="micToggleBtn" class="w-14 h-14 bg-blue-600 rounded-full text-white text-xl hover:bg-blue-700">
+        🎤
+      </button>
+      <button id="hangupCallBtn" class="w-14 h-14 bg-red-600 rounded-full text-white text-xl hover:bg-red-700">
+        🔴
+      </button>
+    </div>
+  </div>
+</div>
+  
+
+  <script>
+    let stompClient = null;
+    let me = null;
+    let activeReceiver = null;
+
+    // WebRTC variables
+    let localStream = null;
+    let peerConnection = null;
+    const rtcConfig = {
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    };
+
+    function el(id) { return document.getElementById(id); }
+
+    async function start() {
+      const u = el('username').value.trim();
+      const p = el('password').value.trim();
+      if (!u || !p) { alert('Please enter username and password'); return; }
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: u, password: p })
+        });
+        const data = await res.json();
+
+        if (data.status !== 'success') {
+          alert('Invalid username or password');
+          return;
+        }
+
+        me = u;
+        el('loginModal').style.display = 'none';
+        el('meTag').textContent = 'You: ' + me;
+
+        updateOnlineUsers(data.onlineUsers.filter(user => user !== me));
+        connect();
+      } catch (err) {
+        console.error(err);
+        alert('Login failed. Check console.');
+      }
+    }
+
+    
+    document.getElementById('hangupBtn').onclick = () => {
+    	  if (stompClient && activeReceiver) {
+    	    stompClient.send("/app/signal", {}, JSON.stringify({
+    	      type: "hangup",
+    	      target: activeReceiver,
+    	      from: me
+    	    }));
+    	  }
+    	  endCall();
+    	};
+
+    function connect() {
+
+    	 const signalingServerURL = 'http://192.168.1.121:8080/ws';
+    	  const socket = new SockJS(signalingServerURL);
+    	
+     /*  const socket = new SockJS('/ws'); */
+      stompClient = Stomp.over(socket);
+      stompClient.connect({}, function () {
+        console.log("Connected as", me);
+
+        stompClient.subscribe('/topic/messages', function (msg) {
+          const m = JSON.parse(msg.body);
+          showMessage(m);
+        });
+
+        stompClient.subscribe('/topic/online', function (msg) {
+          const users = JSON.parse(msg.body);
+          updateOnlineUsers(users.filter(user => user !== me));
+        });
+
+       /*  stompClient.subscribe('/topic/signal', handleSignal); */
+       
+       // ✅ Now listening only to your own unique signal topic
+stompClient.subscribe('/topic/signal/' + me, handleSignal);
+
+       
+
+        stompClient.send("/app/online", {}, JSON.stringify({ user: me }));
+      });
+    }
+
+    function selectUser(user) {
+      activeReceiver = user;
+      el('chatWith').textContent = "Chat with " + user;
+      [...document.querySelectorAll('.user-btn')].forEach(btn => btn.classList.remove('bg-green-600','text-white'));
+      document.getElementById('btn-' + user).classList.add('bg-green-600','text-white');
+    }
+
+    function sendMessage() {
+      const content = el('message').value.trim();
+      if (!content || !activeReceiver) return;
+
+      const msg = { sender: me, receiver: activeReceiver, content: content, time: new Date().toISOString() };
+      stompClient.send("/app/chat", {}, JSON.stringify(msg));
+      el('message').value = '';
+    }
+
+  
+     
+     
+     function showMessage(m) {
+    	  // 🚨 FILTER OUT messages not between me and activeReceiver
+    	  if (
+    	    !(
+    	      (m.sender === me && m.receiver === activeReceiver) ||
+    	      (m.sender === activeReceiver && m.receiver === me)
+    	    )
+    	  ) return;
+
+    	  const box = document.createElement('div');
+    	  const isMine = (m.sender === me);
+
+    	  box.className = `max-w-[70%] px-4 py-2 rounded-2xl shadow 
+    	                    ${isMine ? "ml-auto bg-blue-600 text-white" : "mr-auto bg-slate-200 text-slate-800"}`;
+
+    	  const content = document.createElement('div');
+    	  content.textContent = m.content;
+    	  box.appendChild(content);
+
+    	  const meta = document.createElement('div');
+    	  const t = new Date(m.time || Date.now()).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    	  meta.className = "text-xs opacity-70 mt-1";
+    	  meta.textContent = `${isMine ? "You" : m.sender} • ${t}`;
+    	  box.appendChild(meta);
+
+    	  el('messages').appendChild(box);
+    	  el('messages').scrollTop = el('messages').scrollHeight;
+    	}
+
+     
+     
+  
+ 
+ 
+ 
+ function openChat(user) {
+	  activeReceiver = user;
+	  el('chatWith').textContent = `Chat with ${user}`;
+	  el('messages').innerHTML = '';
+
+	  // Remove active indicators from all users
+	  document.querySelectorAll('[id^="dot-"]').forEach(dot => dot.classList.add('hidden'));
+	  document.querySelectorAll('[id^="status-"]').forEach(status => status.classList.add('hidden'));
+
+	  // Show active indicators on selected user
+	  const dot = document.getElementById('dot-' + user);
+	  const status = document.getElementById('status-' + user);
+	  if (dot) dot.classList.remove('hidden');
+	  if (status) status.classList.remove('hidden');
+
+	  // Fetch and show chat history
+	  fetch(`/api/history/${me}/${user}`, {
+	    credentials: 'include'
+	  })
+	    .then(res => res.json())
+	    .then(history => {
+	      if (Array.isArray(history) && history.length > 0) {
+	        history.forEach(msg => showMessage(msg));
+	      } else {
+	        const emptyMsg = document.createElement('div');
+	        emptyMsg.textContent = 'No previous messages found.';
+	        emptyMsg.className = 'text-gray-500 text-sm';
+	        el('messages').appendChild(emptyMsg);
+	      }
+	    })
+	    .catch(err => {
+	      console.error(err);
+	      const errorBox = document.createElement('div');
+	      errorBox.textContent = 'Error loading chat history.';
+	      errorBox.className = 'text-red-500 text-sm';
+	      el('messages').appendChild(errorBox);
+	    });
+	}
+
+ 
+ 
+ 
+    
+    
+
+     
+     
+     function updateOnlineUsers(users) {
+    	  const container = el('onlineUsers');
+    	  container.innerHTML = '';
+    	  users.forEach(u => {
+    	    const btn = document.createElement('button');
+    	    btn.id = 'btn-' + u;
+    	    btn.className = "user-btn w-full px-4 py-2 rounded-xl border border-slate-200 flex items-center space-x-3 hover:bg-slate-100 text-left";
+    	    btn.onclick = () => openChat(u);
+
+    	    const statusWrapper = document.createElement('div');
+    	    statusWrapper.className = 'flex flex-col items-start';
+
+    	    const nameWrapper = document.createElement('div');
+    	    nameWrapper.className = 'flex items-center space-x-2';
+
+    	    const greenDot = document.createElement('span');
+    	    greenDot.id = `dot-${u}`;
+    	    greenDot.className = 'w-2 h-2 rounded-full bg-green-500 hidden'; // initially hidden
+
+    	    const label = document.createElement('span');
+    	    label.textContent = u;
+    	    label.className = 'font-medium';
+
+    	    nameWrapper.appendChild(greenDot);
+    	    nameWrapper.appendChild(label);
+
+    	    const statusText = document.createElement('span');
+    	    statusText.id = `status-${u}`;
+    	    statusText.className = 'text-xs text-green-500 hidden';
+    	    statusText.textContent = 'Active now';
+
+    	    statusWrapper.appendChild(nameWrapper);
+    	    statusWrapper.appendChild(statusText);
+
+    	    const chatIcon = document.createElement('span');
+    	    chatIcon.textContent = "💬";
+
+    	    const callBtn = document.createElement('button');
+    	    callBtn.textContent = "📞";
+    	    callBtn.className = "ml-2 text-blue-600 font-bold";
+    	    callBtn.onclick = (e) => {
+    	      e.stopPropagation();
+    	      startCall(u);
+    	    };
+
+    	    const controls = document.createElement('div');
+    	    controls.className = 'ml-auto flex items-center space-x-2';
+    	    controls.appendChild(chatIcon);
+    	    controls.appendChild(callBtn);
+
+    	    btn.appendChild(statusWrapper);
+    	    btn.appendChild(controls);
+    	    container.appendChild(btn);
+    	  });
+    	}
+
+     
+     
+     
+    
+    //for audio call connection 
+async function startCall(user) {
+  activeReceiver = user;
+  el('chatWith').textContent = "Calling " + user + "...";
+
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    alert("Microphone access denied.");
+    return;
+  }
+
+ /*  peerConnection = new RTCPeerConnection(rtcConfig);
+  localStream.getTracks().forEach(track => {
+    peerConnection.addTrack(track, localStream);
+  });
+
+  peerConnection.onicecandidate = (e) => {
+    if (e.candidate) {
+      stompClient.send("/app/signal", {}, JSON.stringify({
+        type: "candidate",
+        target: user,
+        from: me,
+        candidate: e.candidate
+      }));
+    }
+  };
+
+  peerConnection.ontrack = (event) => {
+    const audio = new Audio();
+    audio.srcObject = event.streams[0];
+    audio.play();
+    el('chatWith').textContent = `You are talking to ${activeReceiver}`;
+    document.getElementById('hangupBtn')?.classList.remove('hidden');
+  }; */
+  
+  
+  peerConnection = new RTCPeerConnection(rtcConfig);
+  localStream.getTracks().forEach(track => {
+    peerConnection.addTrack(track, localStream);
+  });
+  setupPeerConnectionHandlers();
+
+
+  const offer = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(offer);
+
+   stompClient.send("/app/signal", {}, JSON.stringify({
+    type: "offer",
+    target: user,
+    from: me,
+    offer: offer
+  })); 
+  
+ 
+
+  
+  
+}
+
+    
+   
+ async function handleSignal(data) {
+	  const msg = JSON.parse(data.body);
+	  switch (msg.type) {
+	    case "offer":
+	      await handleOffer(msg);
+	      break;
+	    case "answer":
+	    	  if (peerConnection && msg.answer) {
+	    	    await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.answer));
+	    	  }
+	    	  break;
+        case "candidate":
+	      if (peerConnection) {
+	        await peerConnection.addIceCandidate(new RTCIceCandidate(msg.candidate));
+	      }
+	      break;
+	    case "reject":
+	      alert('The call was rejected.');
+	      endCall();
+	      break;
+	    case "hangup":
+	      alert('Call ended by ' + msg.from);
+	      endCall();
+	      break;
+	  }
+	}
+
+ 
+/*  function endCall() {
+	  if (peerConnection) {
+	    peerConnection.close();
+	    peerConnection = null;
+	  }
+
+	  if (localStream) {
+	    localStream.getTracks().forEach(t => t.stop());
+	    localStream = null;
+	  }
+
+	  el('chatWith').textContent = `Chat with ${activeReceiver}`;
+	  document.getElementById('hangupBtn')?.classList.add('hidden');
+	}
+  */
+  
+  function endCall() {
+	  if (peerConnection) {
+	    peerConnection.close();
+	    peerConnection = null;
+	  }
+
+	  if (localStream) {
+	    localStream.getTracks().forEach(t => t.stop());
+	    localStream = null;
+	  }
+
+	  el('chatWith').textContent = `Chat with ${activeReceiver}`;
+	  el('hangupBtn')?.classList.add('hidden');
+	  hideCallOverlay(); // ✅ hide the call overlay
+	}
+
+  
+  
+ 
+ async function handleOffer(msg) {
+	  activeReceiver = msg.from;
+
+	  const modal = el('incomingCallModal');
+	  const callerName = el('callerName');
+	  if (callerName) {
+	    callerName.textContent = msg.from;
+	  }
+
+	  // Show the full-screen incoming call modal
+	  modal.classList.remove('hidden');
+
+	  // Optional: Play ringtone
+	  // const ringtone = new Audio('/audio/ringtone.mp3');
+	  // ringtone.loop = true;
+	  // ringtone.play();
+
+	  el('acceptCallBtn').onclick = async () => {
+	    modal.classList.add('hidden');
+	    // ringtone.pause();
+	    await answerCall(msg);
+	  };
+
+	  el('rejectCallBtn').onclick = () => {
+	    modal.classList.add('hidden');
+	    // ringtone.pause();
+	    rejectCall(msg);
+	  };
+	}
+
+ 
+     
+    
+ async function answerCall(msg) {
+	  try {
+	    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+	  } catch (err) {
+	    alert("Microphone access denied.");
+	    return;
+	  }
+
+	/*   peerConnection = new RTCPeerConnection(rtcConfig);
+	  localStream.getTracks().forEach(track => {
+	    peerConnection.addTrack(track, localStream);
+	  });
+
+	  peerConnection.onicecandidate = (e) => {
+	    if (e.candidate) {
+	      stompClient.send("/app/signal", {}, JSON.stringify({
+	        type: "candidate",
+	        target: msg.from,
+	        from: me,
+	        candidate: e.candidate
+	      }));
+	    }
+	  };
+
+	  peerConnection.ontrack = (event) => {
+	    const audio = new Audio();
+	    audio.srcObject = event.streams[0];
+	    audio.play();
+	    el('chatWith').textContent = `You are talking to ${activeReceiver}`;
+	    document.getElementById('hangupBtn')?.classList.remove('hidden');
+	  };
+ */
+ 
+ peerConnection = new RTCPeerConnection(rtcConfig);
+ localStream.getTracks().forEach(track => {
+   peerConnection.addTrack(track, localStream);
+ });
+ setupPeerConnectionHandlers();
+
+ 
+	  await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.offer));
+	  const answer = await peerConnection.createAnswer();
+	  await peerConnection.setLocalDescription(answer);
+
+	  stompClient.send("/app/signal", {}, JSON.stringify({
+	    type: "answer",
+	    target: msg.from,
+	    from: me,
+	    answer: answer
+	  })); 
+	  
+	  
+	
+
+	  
+	}
+
+ 
+ 
+ 
+ function setupPeerConnectionHandlers() {
+	  peerConnection.onicecandidate = (e) => {
+	    if (e.candidate) {
+	      stompClient.send("/app/signal", {}, JSON.stringify({
+	        type: "candidate",
+	        target: activeReceiver,
+	        from: me,
+	        candidate: e.candidate
+	      }));
+	    }
+	  };
+
+	 /*  peerConnection.ontrack = (event) => {
+	    let audio = document.getElementById('remoteAudio');
+	    if (!audio) {
+	      audio = document.createElement('audio');
+	      audio.id = 'remoteAudio';
+	      audio.autoplay = true;
+	      document.body.appendChild(audio);
+	    }
+	    audio.srcObject = event.streams[0];
+	    el('chatWith').textContent = `You are talking to ${activeReceiver}`;
+	    el('hangupBtn').classList.remove('hidden');
+	  };
+
+	  peerConnection.onconnectionstatechange = () => {
+	    if (['disconnected', 'failed', 'closed'].includes(peerConnection.connectionState)) {
+	      endCall();
+	    }
+	  }; */
+	  
+	  
+	  
+	  peerConnection.ontrack = (event) => {
+		  let audio = document.getElementById('remoteAudio');
+		  if (!audio) {
+		    audio = document.createElement('audio');
+		    audio.id = 'remoteAudio';
+		    audio.autoplay = true;
+		    audio.playsInline = true; // Mobile Safari fix
+
+		    document.body.appendChild(audio);
+		  }
+		  audio.srcObject = event.streams[0];
+		  
+		  // Try playing the audio explicitly
+		  audio.onloadedmetadata = () => {
+		    audio.play().then(() => {
+		      console.log("✅ Remote audio is playing");
+		    }).catch(e => {
+		      console.warn("⚠️ Remote audio playback failed:", e);
+		    });
+		  };
+		  
+		  
+
+		  el('chatWith').textContent = `You are talking to ${activeReceiver}`;
+		  el('hangupBtn').classList.add('hidden'); // hide default hangup button
+		  showCallOverlay(); // ✅ show the custom UI
+		};
+
+	}
+
+ 
+ 
+ let callStartTime = null;
+ let callTimerInterval = null;
+
+ function showCallOverlay() {
+   el('callUserName').textContent = activeReceiver;
+   el('callOverlay').classList.remove('hidden');
+
+   callStartTime = new Date();
+   updateCallTimer();
+   callTimerInterval = setInterval(updateCallTimer, 1000);
+ }
+
+ function hideCallOverlay() {
+   el('callOverlay').classList.add('hidden');
+   clearInterval(callTimerInterval);
+ }
+
+ function updateCallTimer() {
+   const now = new Date();
+   const diff = Math.floor((now - callStartTime) / 1000);
+   const mins = String(Math.floor(diff / 60)).padStart(2, '0');
+   const secs = String(diff % 60).padStart(2, '0');
+   el('callTimer').textContent = `${mins}:${secs}`;
+ }
+
+ 
+ el('micToggleBtn').onclick = () => {
+	  if (!localStream) return;
+	  const audioTrack = localStream.getAudioTracks()[0];
+	  audioTrack.enabled = !audioTrack.enabled;
+	  el('micToggleBtn').textContent = audioTrack.enabled ? "🎤" : "🔇";
+	};
+
+	el('hangupCallBtn').onclick = () => {
+	  if (stompClient && activeReceiver) {
+	    stompClient.send("/app/signal", {}, JSON.stringify({
+	      type: "hangup",
+	      target: activeReceiver,
+	      from: me
+	    }));
+	  }
+	  endCall();
+	};
+
+ 
+    
+  </script>
+</body>
+</html>
