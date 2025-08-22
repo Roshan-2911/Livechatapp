@@ -113,6 +113,10 @@
     </div>
   </div>
 </div>
+
+
+
+
   
 
   <script>
@@ -171,37 +175,41 @@
     	  endCall();
     	};
 
-    function connect() {
-
-    	 const signalingServerURL = 'http://192.168.1.121:8080/ws';
-    	  const socket = new SockJS(signalingServerURL);
+   
     	
-     /*  const socket = new SockJS('/ws'); */
-      stompClient = Stomp.over(socket);
-      stompClient.connect({}, function () {
-        console.log("Connected as", me);
+    	 function connect() {
 
-        stompClient.subscribe('/topic/messages', function (msg) {
-          const m = JSON.parse(msg.body);
-          showMessage(m);
-        });
+        	 const signalingServerURL = 'http://192.168.1.121:8080/ws';
+        	  const socket = new SockJS(signalingServerURL);
+        	
+         /*  const socket = new SockJS('/ws'); */
+          stompClient = Stomp.over(socket);
+          stompClient.connect({}, function () {
+            console.log("Connected as", me);
 
-        stompClient.subscribe('/topic/online', function (msg) {
-          const users = JSON.parse(msg.body);
-          updateOnlineUsers(users.filter(user => user !== me));
-        });
+            stompClient.subscribe('/topic/messages', function (msg) {
+              const m = JSON.parse(msg.body);
+              showMessage(m);
+            });
 
-       /*  stompClient.subscribe('/topic/signal', handleSignal); */
-       
-       // ✅ Now listening only to your own unique signal topic
-stompClient.subscribe('/topic/signal/' + me, handleSignal);
+            stompClient.subscribe('/topic/online', function (msg) {
+              const users = JSON.parse(msg.body);
+              updateOnlineUsers(users.filter(user => user !== me));
+            });
 
-       
+           /*  stompClient.subscribe('/topic/signal', handleSignal); */
+           
+           // ✅ Now listening only to your own unique signal topic
+    stompClient.subscribe('/topic/signal/' + me, handleSignal);
 
-        stompClient.send("/app/online", {}, JSON.stringify({ user: me }));
-      });
-    }
+           
 
+            stompClient.send("/app/online", {}, JSON.stringify({ user: me }));
+          });
+        }
+
+
+    	
     function selectUser(user) {
       activeReceiver = user;
       el('chatWith').textContent = "Chat with " + user;
@@ -581,7 +589,7 @@ async function startCall(user) {
  
  
  
- function setupPeerConnectionHandlers() {
+/*  function setupPeerConnectionHandlers() {
 	  peerConnection.onicecandidate = (e) => {
 	    if (e.candidate) {
 	      stompClient.send("/app/signal", {}, JSON.stringify({
@@ -593,27 +601,7 @@ async function startCall(user) {
 	    }
 	  };
 
-	 /*  peerConnection.ontrack = (event) => {
-	    let audio = document.getElementById('remoteAudio');
-	    if (!audio) {
-	      audio = document.createElement('audio');
-	      audio.id = 'remoteAudio';
-	      audio.autoplay = true;
-	      document.body.appendChild(audio);
-	    }
-	    audio.srcObject = event.streams[0];
-	    el('chatWith').textContent = `You are talking to ${activeReceiver}`;
-	    el('hangupBtn').classList.remove('hidden');
-	  };
 
-	  peerConnection.onconnectionstatechange = () => {
-	    if (['disconnected', 'failed', 'closed'].includes(peerConnection.connectionState)) {
-	      endCall();
-	    }
-	  }; */
-	  
-	  
-	  
 	  peerConnection.ontrack = (event) => {
 		  let audio = document.getElementById('remoteAudio');
 		  if (!audio) {
@@ -642,7 +630,65 @@ async function startCall(user) {
 		  showCallOverlay(); // ✅ show the custom UI
 		};
 
-	}
+	} */
+	
+	
+	function setupPeerConnectionHandlers() {
+		  peerConnection.onicecandidate = (e) => {
+		    if (e.candidate) {
+		      stompClient.send("/app/signal", {}, JSON.stringify({
+		        type: "candidate",
+		        target: activeReceiver,
+		        from: me,
+		        candidate: e.candidate
+		      }));
+		    }
+		  };
+
+		  peerConnection.ontrack = (event) => {
+		    let audio = document.getElementById('remoteAudio');
+		    if (!audio) {
+		      audio = document.createElement('audio');
+		      audio.id = 'remoteAudio';
+		      audio.autoplay = true;
+		      audio.playsInline = true; // Mobile Safari fix
+		      document.body.appendChild(audio);
+		    }
+
+		    audio.srcObject = event.streams[0];
+
+		    // Try playing the audio explicitly
+		    audio.onloadedmetadata = () => {
+		      audio.play().then(() => {
+		        console.log("✅ Remote audio is playing");
+		      }).catch(e => {
+		        console.warn("⚠️ Remote audio playback failed:", e);
+		      });
+		    };
+
+		    el('chatWith').textContent = `You are talking to ${activeReceiver}`;
+		    el('hangupBtn').classList.add('hidden'); // hide default hangup button
+		    showCallOverlay(); // ✅ show the custom UI
+		  };
+
+		  // ✅ Add these two event listeners INSIDE the function
+		  peerConnection.oniceconnectionstatechange = () => {
+		    const state = peerConnection.iceConnectionState;
+		    console.log("ICE connection state:", state);
+		    if (state === 'closed' || state === 'failed') {
+		      endCall();
+		    }
+		  };
+
+		  peerConnection.onsignalingstatechange = () => {
+		    const sigState = peerConnection.signalingState;
+		    console.log("Signaling state:", sigState);
+		    if (sigState === 'closed') {
+		      endCall();
+		    }
+		  };
+		}
+
 
  
  
@@ -690,7 +736,8 @@ async function startCall(user) {
 	  endCall();
 	};
 
- 
+	
+	
     
   </script>
 </body>
